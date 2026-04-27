@@ -2,12 +2,10 @@
 using System;
 using System.Reflection;
 using GlobalEnums;
-using HKMirror.Reflection.InstanceClasses;
 using Hkmp.Api.Client;
 using Hkmp.Game;
 using HkmpPouch;
 using HKMirror.Reflection.SingletonClasses;
-using UnityEngine;
 
 namespace SharedHealth
 {
@@ -53,14 +51,19 @@ namespace SharedHealth
 
         private void ReceivePipeBroadcast(object sender, ReceivedEventArgs e)
         {
-            Log("Received pipe for " + e.Data.EventName);
-            IClientPlayer player = pipe.ClientApi.ClientManager.GetPlayer(e.Data.FromPlayer);
+            Team playerTeam = pipe.ClientApi.ClientManager.Team;
+            Team receivedPipeTeam = (Team)e.Data.ExtraBytes[1];
+            Log("Received pipe for " + e.Data.EventName + " from team " + receivedPipeTeam);
 
-            if (player.Team == Team.None ||
-                pipe.ClientApi.ClientManager.Team != player.Team ||
-                pipe.ClientApi.ClientManager.Team == Team.None)
+            if (playerTeam == Team.None)
             {
-                Log("Ignoring pipe as either one of the player is team None or not from the same team");
+                Log("Ignoring pipe as player is in team None");
+                return;
+            }
+
+            if (playerTeam != receivedPipeTeam)
+            {
+                Log("Ignoring pipe as player is not in the same team");
                 return;
             }
             
@@ -93,8 +96,11 @@ namespace SharedHealth
 
         private void HandleHealEvent(ReceivedEventArgs e)
         {
+            Log("Start Heal Event Handling");
             byte health = e.Data.ExtraBytes[0];
+            Log("Setting isHealFromPipe to true");
             isHealFromPipe = true;
+            Log("Adding " + health + " health");
             HeroController.instance.AddHealth(health);
         }
 
@@ -103,7 +109,6 @@ namespace SharedHealth
             Log("Handling bench event");
 
             isBenchFromPipe = true;
-            isHealFromPipe = true;
             
             HeroController.instance.MaxHealthKeepBlue();
             EventRegister.SendEvent("UPDATE BLUE HEALTH");
@@ -131,12 +136,12 @@ namespace SharedHealth
 
             if (isDamageFromPipe) return damageAmount;
             
-            byte[] amountDamage = [Convert.ToByte(damageAmount)];
-            if (HeroController.instance.playerData.overcharmed)
-                amountDamage[0] *= 2;
             
-            Log("Sending pipe for " + amountDamage[0] + " damage");
-            pipe.Broadcast(DamageEventName, DamageEventName, amountDamage, false);
+            byte[] data = [HeroController.instance.playerData.overcharmed ? Convert.ToByte(damageAmount * 2) : Convert.ToByte(damageAmount), 
+                (byte)pipe.ClientApi.ClientManager.Team];
+            
+            Log("Sending pipe for " + data[0] + " damage");
+            pipe.Broadcast(DamageEventName, DamageEventName, data, false);
             
             Log("Setting isDamageFromPipe to false in Hook");
             isDamageFromPipe = false;
@@ -149,8 +154,13 @@ namespace SharedHealth
             orig(self, amount);
             
             if (!isHealFromPipe)
-                pipe.Broadcast(HealEventName, HealEventName, [Convert.ToByte(amount)], false);
+            {
+                Log("Heal not from pipe. Broadcast sent");
 
+                pipe.Broadcast(HealEventName, HealEventName, [Convert.ToByte(amount), (byte)pipe.ClientApi.ClientManager.Team], false);
+            } else Log("Heal from pipe. No broadcast");
+
+            Log("Setting isHealFromPipe to false");
             isHealFromPipe = false;
         }
 
@@ -159,7 +169,7 @@ namespace SharedHealth
             orig(self);
             
             if (!isBenchFromPipe)
-                pipe.Broadcast(BenchEventName, BenchEventName, [Byte.MaxValue], false);
+                pipe.Broadcast(BenchEventName, BenchEventName, [0, (byte)pipe.ClientApi.ClientManager.Team], false);
 
             isBenchFromPipe = false;
         }
