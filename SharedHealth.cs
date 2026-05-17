@@ -2,7 +2,6 @@
 using System;
 using System.Reflection;
 using GlobalEnums;
-using Hkmp.Api.Client;
 using Hkmp.Game;
 using HkmpPouch;
 using HKMirror.Reflection.SingletonClasses;
@@ -21,6 +20,9 @@ namespace SharedHealth
         private bool isHealFromPipe = false;
         private bool isDamageFromPipe = false;
         private bool isBenchFromPipe = false;
+        private bool isDeathQueued = false;
+
+        private int damageQueue = 0;
         
         private static Loggable loggable = new SimpleLogger("SharedHealth");
 
@@ -47,7 +49,29 @@ namespace SharedHealth
             On.HeroController.TakeHealth += ResetIsDamageFromPipe;
             On.HeroController.AddHealth += SendHealthInPipe;
             On.HeroController.MaxHealth += SendBenchInPipe;
+            ModHooks.HeroUpdateHook += OnHeroUpdate;
         }
+        
+        private void OnHeroUpdate()
+        {
+            HeroController hc = HeroController.instance;
+            if ((damageQueue != 0 || isDeathQueued) && hc.acceptingInput)
+            {
+                if (isDeathQueued)
+                {
+                    KillPlayer(hc);
+                    isDeathQueued = false;
+                }
+                else
+                {
+                    hc.TakeHealth(damageQueue);
+                    hc.GetComponent<HeroAudioController>().PlaySound(HeroSounds.TAKE_HIT);
+                }
+
+                damageQueue = 0;
+            }
+        }
+
 
         private void ReceivePipeBroadcast(object sender, ReceivedEventArgs e)
         {
@@ -85,17 +109,37 @@ namespace SharedHealth
 
         private void HandleDamageEvent(ReceivedEventArgs e)
         {
+            HeroController hc = HeroController.instance;
+            if (!hc.acceptingInput)
+            {
+                damageQueue += e.Data.ExtraBytes[0];
+                
+                Log("Damage queue after damage is " + damageQueue);
+
+                if (damageQueue >= hc.playerData.health)
+                    isDeathQueued = true;
+                
+                return;
+            }
+            
             Log("Handling damage event");
             byte damage = e.Data.ExtraBytes[0];
             Log("Applying " + damage + " damage");
             Log("Setting isDamageFromPipe to true");
             isDamageFromPipe = true;
             
-            HeroController.instance.TakeHealth(damage);
+            hc.TakeHealth(damage);
         }
 
         private void HandleHealEvent(ReceivedEventArgs e)
         {
+            if (damageQueue != 0)
+            {
+                damageQueue = Math.Max(0, damageQueue - e.Data.ExtraBytes[0]);
+                Log("Damage queue after heal is " + damageQueue);
+                return;
+            }
+            
             Log("Start Heal Event Handling");
             byte health = e.Data.ExtraBytes[0];
             Log("Setting isHealFromPipe to true");
@@ -112,6 +156,12 @@ namespace SharedHealth
             
             HeroController.instance.MaxHealthKeepBlue();
             EventRegister.SendEvent("UPDATE BLUE HEALTH");
+
+            if (damageQueue != 0)
+            {
+                Log("Bench received, cleared damage queue");
+                damageQueue = 0;
+            }
         }
         
         private void ResetIsDamageFromPipe(On.HeroController.orig_TakeHealth orig, HeroController self, int damageAmount)
@@ -122,12 +172,8 @@ namespace SharedHealth
 
             self.GetComponent<HeroAudioController>().PlaySound(HeroSounds.TAKE_HIT);
             
-            if (self.playerData.health == 0)
-            {
-                Log("No more HP. Killing");
-
-                _ = self.StartCoroutine(HeroControllerR.Die());
-            }
+            if (self.playerData.health <= 0)
+                KillPlayer(self);
         }
         
         private int SendDamageInPipe(int hazardType, int damageAmount)
@@ -174,9 +220,15 @@ namespace SharedHealth
             isBenchFromPipe = false;
         }
 
+        private void KillPlayer(HeroController hc)
+        {
+            Log("No more HP. Killing");
+            _ = hc.StartCoroutine(HeroControllerR.Die());
+        }
+
         private new static void Log(string str)
         {
-            // loggable.Log(str);
+            //loggable.Log(str);
         }
     }
 }
